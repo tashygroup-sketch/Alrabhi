@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Check, MapPin, Plus, Search, ShoppingBag, X } from "lucide-react";
 import {
   coverImage,
-  effectivePrice,
   getCategories,
   getMenu,
   getStorySection,
@@ -17,6 +16,7 @@ import { LetterPicker } from "@/components/LetterPicker";
 import { BookingDialog } from "@/components/BookingDialog";
 import { ProductSheet, formatPrice, type AppliedDiscount } from "@/components/ProductSheet";
 import { SocialLinks } from "@/components/SocialLinks";
+import { ShowMore } from "@/components/ShowMore";
 import { optionsLabel, useCart, type CartOption } from "@/lib/cart";
 import { buildSearchIndex, searchProducts } from "@/lib/search";
 import { letterOf, sortByName } from "@/lib/sort";
@@ -24,14 +24,43 @@ import { preloadAll, thumbUrl } from "@/lib/photos";
 import { arCount } from "@/lib/utils";
 import { keepLayer, useCloseLayer, useLockScroll, withLayer } from "@/lib/back-layer";
 import { overStockValue, remainingForChoice } from "@/lib/stock";
+import {
+  codePriceFor,
+  payPrice,
+  regularPriceFor,
+  regularPriceRange,
+  salePriceFor,
+} from "@/lib/pricing";
 import { WHATSAPP_NUMBER } from "@/lib/whatsapp";
 
-const menuQuery = queryOptions({ queryKey: ["menu"], queryFn: () => getMenu() });
-const storyQuery = queryOptions({ queryKey: ["story"], queryFn: () => getStorySection() });
+// Not asked again for a minute (e.g. each time the customer comes back to the tab): fewer
+// requests when there are many customers. The control panel refreshes them after a change.
+const PUBLIC_STALE_MS = 60_000;
+const menuQuery = queryOptions({
+  queryKey: ["menu"],
+  queryFn: () => getMenu(),
+  staleTime: PUBLIC_STALE_MS,
+});
+const storyQuery = queryOptions({
+  queryKey: ["story"],
+  queryFn: () => getStorySection(),
+  staleTime: PUBLIC_STALE_MS,
+});
 const categoriesQuery = queryOptions({
   queryKey: ["categories"],
   queryFn: () => getCategories(),
+  staleTime: PUBLIC_STALE_MS,
 });
+
+// Long lists (a big category, search results) show GRID_PAGE products at first and more as
+// the customer scrolls down, so a category with thousands of products doesn't make the phone
+// draw — and download the photos of — thousands of cards at once.
+const GRID_PAGE = 48;
+// Light copies downloaded in the background: the whole shop when it's small; for a big shop
+// only the first screens of each category, so one visit never downloads the whole catalogue
+// (that would cost the customer's data and the shop's monthly allowance of photo traffic).
+const PRELOAD_ALL_UP_TO = 150;
+const PRELOAD_PER_CATEGORY = 12;
 
 // What's open lives in the URL, each with its own history entry, so the phone's back button
 // closes the top thing first (product → category → squares) instead of leaving the site:
@@ -103,6 +132,13 @@ function Home() {
   const [justAdded, setJustAdded] = useState<string | null>(null);
   const [limitHit, setLimitHit] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // how many products of the current list are drawn (see GRID_PAGE); starts over for a new list
+  const listKey = `${cat ?? ""}|${query.trim()}`;
+  const [more, setMore] = useState({ key: listKey, count: GRID_PAGE });
+  const shownCount = more.key === listKey ? more.count : GRID_PAGE;
+  const showUpTo = (count: number) => setMore({ key: listKey, count });
+  // a product to scroll to once it's drawn (after a letter was picked)
+  const [jumpTarget, setJumpTarget] = useState<string | null>(null);
   // the product the customer just jumped to with the letter list (outlined for a moment)
   const [jumpedTo, setJumpedTo] = useState<string | null>(null);
   const shopRef = useRef<HTMLElement>(null);
@@ -165,15 +201,23 @@ function Home() {
     [categoryItems],
   );
 
-  // Letter list → scroll to the first product that starts with the chosen letter.
+  // Letter list → scroll to the first product that starts with the chosen letter (drawing
+  // the list down to it first when it's further than what's shown so far).
   function jumpToLetter(letter: string) {
-    const target = categoryItems.find((m) => letterOf(m.name) === letter);
-    if (!target) return;
-    document
-      .getElementById(`product-${target.id}`)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const index = categoryItems.findIndex((m) => letterOf(m.name) === letter);
+    if (index === -1) return;
+    const target = categoryItems[index]!;
+    if (index >= shownCount) showUpTo(index + GRID_PAGE);
+    setJumpTarget(target.id);
     flash(setJumpedTo, target.id, 1800);
   }
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const el = document.getElementById(`product-${jumpTarget}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    setJumpTarget(null);
+  }, [jumpTarget, shownCount]);
 
   // Fetch the light copies of every category and product photo in the background, in the
   // order they're shown, so a category's photos are already on the phone when it's opened
@@ -184,8 +228,14 @@ function Home() {
     if (saveData) return;
     const urls: string[] = [];
     for (const c of categories) urls.push(thumbUrl(c.photo) ?? "");
-    for (const c of categories)
-      for (const m of sortByName(c.items)) urls.push(thumbUrl(coverImage(m)) ?? "");
+    const lists = categories.map((c) =>
+      sortByName(c.items).map((m) => thumbUrl(coverImage(m)) ?? ""),
+    );
+    // the first screens of every category, then — for a small shop — all the rest
+    for (const list of lists) urls.push(...list.slice(0, PRELOAD_PER_CATEGORY));
+    if (lists.reduce((n, list) => n + list.length, 0) <= PRELOAD_ALL_UP_TO) {
+      for (const list of lists) urls.push(...list.slice(PRELOAD_PER_CATEGORY));
+    }
     let stop = () => {};
     // a moment's head start for the photos already on screen
     const timer = window.setTimeout(() => {
@@ -250,7 +300,7 @@ function Home() {
       if (!d || (d.ends_at && new Date(d.ends_at).getTime() <= Date.now())) {
         return "انتهى الخصم على هذا المنتج، احذفوه وأضيفوه من جديد";
       }
-    } else if (Math.abs(l.price - effectivePrice(product)) > 0.005) {
+    } else if (Math.abs(l.price - salePriceFor(product, l.options)) > 0.005) {
       return "تغيّر سعر هذا المنتج، احذفوه وأضيفوه من جديد";
     }
     return null;
@@ -284,7 +334,7 @@ function Home() {
       {
         id: item.id,
         name: item.name,
-        price: effectivePrice(item),
+        price: salePriceFor(item, []),
         image_url: coverImage(item),
         ...(item.sale_price !== null ? { regular_price: Number(item.price) } : {}),
       },
@@ -307,11 +357,14 @@ function Home() {
       {
         id: item.id,
         name: item.name,
-        price: discount ? discount.price : effectivePrice(item),
+        // the chosen value's own price when it has one (src/lib/pricing.ts)
+        price: discount ? codePriceFor(item, options, discount.price) : salePriceFor(item, options),
         image_url: valueImage ?? coverImage(item),
         options,
         ...(discount ? { discount_code: discount.code } : {}),
-        ...(discount || item.sale_price !== null ? { regular_price: Number(item.price) } : {}),
+        ...(discount || item.sale_price !== null
+          ? { regular_price: regularPriceFor(item, options) }
+          : {}),
       },
       qty,
     );
@@ -335,123 +388,135 @@ function Home() {
 
   // A plain render function, not an inner component: an inner component would be a new type
   // on every render and remount the whole grid (and its images) on each search keystroke.
-  function renderProductGrid(items: MenuItem[], withCategory = false) {
+  function renderProductGrid(all: MenuItem[], withCategory = false) {
+    const items = all.slice(0, shownCount);
     return (
-      <ul className="mt-4 grid grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 lg:grid-cols-4">
-        {items.map((item) => {
-          const soldOut = item.stock === 0;
-          const firstVariable = item.variables[0];
-          const cover = coverImage(item);
-          return (
-            <li
-              key={item.id}
-              id={`product-${item.id}`}
-              className={`scroll-mt-48 rounded-2xl transition-shadow duration-300 ${
-                soldOut ? "opacity-60" : ""
-              } ${jumpedTo === item.id ? "ring-2 ring-primary ring-offset-4 ring-offset-background" : ""}`}
-            >
-              <div className="relative">
+      <>
+        <ul className="mt-4 grid grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 lg:grid-cols-4">
+          {items.map((item) => {
+            const soldOut = item.stock === 0;
+            const firstVariable = item.variables[0];
+            const cover = coverImage(item);
+            // values with their own price: the card shows the lowest as "من …"
+            const range = regularPriceRange(item);
+            const fromPrice = payPrice(item, range.min);
+            return (
+              <li
+                key={item.id}
+                id={`product-${item.id}`}
+                className={`scroll-mt-48 rounded-2xl transition-shadow duration-300 ${
+                  soldOut ? "opacity-60" : ""
+                } ${jumpedTo === item.id ? "ring-2 ring-primary ring-offset-4 ring-offset-background" : ""}`}
+              >
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setSheetItem(item)}
+                    aria-label={item.name}
+                    className="photo-slot block aspect-[3/4] w-full overflow-hidden rounded-2xl bg-muted"
+                  >
+                    {cover && (
+                      <Photo
+                        thumb
+                        src={cover}
+                        className={`h-full w-full object-cover ${soldOut ? "grayscale" : ""}`}
+                      />
+                    )}
+                  </button>
+                  <div className="pointer-events-none absolute top-2 right-2 flex flex-col items-start gap-1">
+                    {soldOut && (
+                      <span className="rounded-md bg-ink px-2 py-0.5 text-[11px] font-bold text-white">
+                        نفذت الكمية
+                      </span>
+                    )}
+                    {!soldOut && item.sale_price !== null && (
+                      <span className="rounded-md bg-primary px-2 py-0.5 text-[11px] font-bold text-primary-foreground">
+                        خصم {Math.round((1 - item.sale_price / Number(item.price)) * 100)}%
+                      </span>
+                    )}
+                    {!soldOut && item.discount && (
+                      <span className="rounded-md bg-ink px-2 py-0.5 text-[11px] font-bold text-white">
+                        خصم بالكود
+                      </span>
+                    )}
+                  </div>
+                  {!soldOut && (
+                    <button
+                      type="button"
+                      onClick={() => handleQuickAdd(item)}
+                      aria-label={`أضيفوا ${item.name} للسلة`}
+                      className={`absolute bottom-2 left-2 flex h-10 min-w-10 items-center justify-center gap-1 rounded-full px-2.5 text-sm font-bold shadow-[0_6px_16px_-6px_rgba(0,0,0,0.45)] transition-colors ${
+                        limitHit === item.id
+                          ? "bg-card text-muted-foreground"
+                          : justAdded === item.id
+                            ? "bg-ink text-white"
+                            : "bg-primary text-primary-foreground"
+                      }`}
+                    >
+                      {limitHit === item.id ? (
+                        <span className="px-1 text-xs">المتوفر {remainingFor(item.id)} فقط</span>
+                      ) : justAdded === item.id ? (
+                        <Check className="h-5 w-5" strokeWidth={3} />
+                      ) : (
+                        <Plus className="h-5 w-5" strokeWidth={3} />
+                      )}
+                    </button>
+                  )}
+                </div>
+
                 <button
                   type="button"
                   onClick={() => setSheetItem(item)}
-                  aria-label={item.name}
-                  className="photo-slot block aspect-[3/4] w-full overflow-hidden rounded-2xl bg-muted"
+                  className="mt-2.5 block w-full text-start"
                 >
-                  {cover && (
-                    <Photo
-                      thumb
-                      src={cover}
-                      className={`h-full w-full object-cover ${soldOut ? "grayscale" : ""}`}
-                    />
+                  <span className="line-clamp-2 block text-[15px] leading-6 font-bold text-ink">
+                    {item.name}
+                  </span>
+                  {withCategory && (
+                    <span className="block text-xs text-muted-foreground">{item.category}</span>
                   )}
-                </button>
-                <div className="pointer-events-none absolute top-2 right-2 flex flex-col items-start gap-1">
-                  {soldOut && (
-                    <span className="rounded-md bg-ink px-2 py-0.5 text-[11px] font-bold text-white">
-                      نفذت الكمية
+                  {firstVariable && (
+                    <span className="block text-sm text-muted-foreground">
+                      {firstVariable.name}:{" "}
+                      {arCount(firstVariable.values.length, [
+                        "خيار واحد",
+                        "خياران",
+                        "خيارات",
+                        "خيار",
+                      ])}
                     </span>
                   )}
-                  {!soldOut && item.sale_price !== null && (
-                    <span className="rounded-md bg-primary px-2 py-0.5 text-[11px] font-bold text-primary-foreground">
-                      خصم {Math.round((1 - item.sale_price / Number(item.price)) * 100)}%
+                  {item.min_qty > 1 && (
+                    <span className="block text-xs font-medium text-accent-foreground">
+                      أقل كمية: {item.min_qty}
                     </span>
                   )}
-                  {!soldOut && item.discount && (
-                    <span className="rounded-md bg-ink px-2 py-0.5 text-[11px] font-bold text-white">
-                      خصم بالكود
+                  {/* flex keeps the two numbers apart under right-to-left reordering */}
+                  <span className="mt-1 flex flex-wrap items-baseline gap-x-2">
+                    <span
+                      className={`text-[17px] font-extrabold ${item.sale_price !== null ? "text-primary" : "text-ink"}`}
+                    >
+                      {range.min !== range.max && <span className="text-xs font-bold">من </span>}
+                      {formatPrice(fromPrice)} <span className="text-xs font-bold">د.ل</span>
                     </span>
-                  )}
-                </div>
-                {!soldOut && (
-                  <button
-                    type="button"
-                    onClick={() => handleQuickAdd(item)}
-                    aria-label={`أضيفوا ${item.name} للسلة`}
-                    className={`absolute bottom-2 left-2 flex h-10 min-w-10 items-center justify-center gap-1 rounded-full px-2.5 text-sm font-bold shadow-[0_6px_16px_-6px_rgba(0,0,0,0.45)] transition-colors ${
-                      limitHit === item.id
-                        ? "bg-card text-muted-foreground"
-                        : justAdded === item.id
-                          ? "bg-ink text-white"
-                          : "bg-primary text-primary-foreground"
-                    }`}
-                  >
-                    {limitHit === item.id ? (
-                      <span className="px-1 text-xs">المتوفر {remainingFor(item.id)} فقط</span>
-                    ) : justAdded === item.id ? (
-                      <Check className="h-5 w-5" strokeWidth={3} />
-                    ) : (
-                      <Plus className="h-5 w-5" strokeWidth={3} />
+                    {fromPrice < range.min && (
+                      <span className="text-sm text-muted-foreground line-through">
+                        {formatPrice(range.min)}
+                      </span>
                     )}
-                  </button>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setSheetItem(item)}
-                className="mt-2.5 block w-full text-start"
-              >
-                <span className="line-clamp-2 block text-[15px] leading-6 font-bold text-ink">
-                  {item.name}
-                </span>
-                {withCategory && (
-                  <span className="block text-xs text-muted-foreground">{item.category}</span>
-                )}
-                {firstVariable && (
-                  <span className="block text-sm text-muted-foreground">
-                    {firstVariable.name}:{" "}
-                    {arCount(firstVariable.values.length, [
-                      "خيار واحد",
-                      "خياران",
-                      "خيارات",
-                      "خيار",
-                    ])}
                   </span>
-                )}
-                {item.min_qty > 1 && (
-                  <span className="block text-xs font-medium text-accent-foreground">
-                    أقل كمية: {item.min_qty}
-                  </span>
-                )}
-                {/* flex keeps the two numbers apart under right-to-left reordering */}
-                <span className="mt-1 flex flex-wrap items-baseline gap-x-2">
-                  <span
-                    className={`text-[17px] font-extrabold ${item.sale_price !== null ? "text-primary" : "text-ink"}`}
-                  >
-                    {formatPrice(effectivePrice(item))}{" "}
-                    <span className="text-xs font-bold">د.ل</span>
-                  </span>
-                  {item.sale_price !== null && (
-                    <span className="text-sm text-muted-foreground line-through">
-                      {formatPrice(item.price)}
-                    </span>
-                  )}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        {all.length > items.length && (
+          <ShowMore
+            left={all.length - items.length}
+            onMore={() => showUpTo(items.length + GRID_PAGE)}
+          />
+        )}
+      </>
     );
   }
 
