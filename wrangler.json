@@ -1,0 +1,15 @@
+{
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "alrabhi-db",
+      "database_id": "2f8b5127-e16c-4555-ae5d-58e382f2442c"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "PHOTOS",
+      "id": "9216efc69c8c449c9b5a3a7f682daba7"
+    }
+  ]
+}
