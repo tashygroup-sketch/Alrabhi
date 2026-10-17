@@ -1,0 +1,44 @@
+{
+ "orders": [
+  {
+   "id": "2dc45014-e15c-4581-af88-d58f28c24c80",
+   "customer_name": "معتز عبد العاطي",
+   "phone": "0922221235",
+   "address": "بنغازي الفويهات",
+   "delivery_date": null,
+   "notes": "اتصل واتس",
+   "location_url": null,
+   "items": "[{\"id\":\"d5176c39-d102-413c-a9c5-2c603732ee2c\",\"qty\":1,\"name\":\"بطانيه فرو الأرنب\",\"price\":94,\"options\":[{\"name\":\"اللون\",\"value\":\"بيج\"}],\"image_url\":\"/photos/5746a7ed-5614-4ed9-93b7-98e2ee1132dd.jpg\"}]",
+   "total": 94.0,
+   "status": "جديد",
+   "created_at": "2026-10-09T16:57:06.571Z"
+  },
+  {
+   "id": "86460b84-09ac-4722-8e4f-6c7730314e37",
+   "customer_name": "اميره",
+   "phone": "0921295926",
+   "address": "سلماني",
+   "delivery_date": null,
+   "notes": null,
+   "location_url": null,
+   "items": "[{\"id\":\"cd8ede3c-655d-4e11-8151-e4f318b55e72\",\"qty\":1,\"name\":\"كب كيك الورد\",\"price\":5},{\"id\":\"1a3778de-52da-4787-aa18-38184cfcf7aa\",\"qty\":1,\"name\":\"كيكة المناسبات\",\"price\":150},{\"id\":\"32f40f5a-8da6-4959-a63d-b92cc58ee413\",\"qty\":1,\"name\":\"ماكارون فرنسي\",\"price\":45}]",
+   "total": 200.0,
+   "status": "جديد",
+   "created_at": "2026-09-29T11:25:05.219Z"
+  },
+  {
+   "id": "b13ce646-7c48-4b9c-90c0-a33bba550f38",
+   "customer_name": "فرج",
+   "phone": "0924662006",
+   "address": "بنغازي",
+   "delivery_date": null,
+   "notes": null,
+   "location_url": null,
+   "items": "[{\"id\":\"8abcd2d6-9f27-4eb7-b3b1-46fca3aabedd\",\"qty\":1,\"name\":\"فرش بوهو متوسط\",\"price\":95,\"stock\":\"pending\",\"options\":[{\"name\":\"نوع الفرشه\",\"value\":\"قماش\"}],\"image_url\":\"/photos/4a36cc30-b522-46bf-b33a-8938f96e990b.jpg\"}]",
+   "total": 95.0,
+   "status": "جديد",
+   "created_at": "2026-10-09T19:55:59.839Z"
+  }
+ ],
+ "discounts": []
+}
