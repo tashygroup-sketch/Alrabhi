@@ -1002,6 +1002,47 @@ export const checkAdminCode = createServerFn({ method: "POST" })
     return { admin: isAdminPhone(normalizeLibyanPhone(data.phone)) };
   });
 
+type StockSeen = {
+  stock: number | null;
+  values: { name: string; label: string; stock: number | null }[];
+};
+
+// Saving a product must never undo a sale. The form shows the quantities from when it was
+// opened; if an order was delivered (or undone) meanwhile, writing those numbers back would
+// put the sold pieces back. So a quantity the admin left as it was shown keeps the database's
+// current number, and only a quantity the admin actually changed is written.
+// Changes `variables` in place; returns the product quantity to save.
+async function keepUntouchedStock(
+  db: Awaited<ReturnType<typeof serverStore>>,
+  id: string,
+  stock: number | null | undefined,
+  variables: ProductVariant[],
+  seen: StockSeen | undefined,
+): Promise<{ stock: number | null | undefined }> {
+  if (!seen) return { stock };
+  const { data: row } = await db
+    .from("menu_items")
+    .select("stock,variables")
+    .eq("id", id)
+    .maybeSingle();
+  if (!row) return { stock };
+  const nowVars = (Array.isArray(row.variables) ? row.variables : []) as ProductVariant[];
+  const seenValue = (name: string, label: string) =>
+    seen.values.find((x) => x.name.trim() === name && x.label.trim() === label);
+  for (const v of variables) {
+    for (const x of v.values) {
+      const before = seenValue(v.name, x.label);
+      if (!before || (before.stock ?? null) !== (x.stock ?? null)) continue; // changed or new
+      const now = nowVars
+        .find((n) => n?.name === v.name)
+        ?.values?.find((n) => n?.label === x.label);
+      if (now) x.stock = typeof now.stock === "number" ? now.stock : null;
+    }
+  }
+  const same = (seen.stock ?? null) === (stock ?? null);
+  return { stock: same ? ((row.stock as number | null) ?? null) : stock };
+}
+
 export const saveMenuItem = createServerFn({ method: "POST" })
   .inputValidator(
     (input: {
@@ -1024,6 +1065,9 @@ export const saveMenuItem = createServerFn({ method: "POST" })
         sale_price?: number | null;
         // null/empty code = remove the product's discount
         discount?: { code: string; discount_price: number; ends_at: string | null } | null;
+        // The quantities the form showed when it was opened. A quantity the admin didn't
+        // touch is left as it is in the database now (see keepUntouchedStock).
+        stock_seen?: StockSeen;
       };
     }) => {
       if (!input.item?.name?.trim()) throw new Error("اسم الصنف مطلوب");
@@ -1033,6 +1077,9 @@ export const saveMenuItem = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const db = await adminClient(data.phone);
     const variables = sanitizeVariables(data.item.variables);
+    const kept = data.item.id
+      ? await keepUntouchedStock(db, data.item.id, data.item.stock, variables, data.item.stock_seen)
+      : { stock: data.item.stock };
     const valueStock = hasValueStock(variables);
     if (valueStock) {
       // Quantities per value are only safe once the database can deduct them on each order.
@@ -1073,9 +1120,9 @@ export const saveMenuItem = createServerFn({ method: "POST" })
       // With quantities per value, the total is calculated from them (never typed by hand).
       stock: valueStock
         ? totalFromValues(variables)
-        : data.item.stock === null || data.item.stock === undefined
+        : kept.stock === null || kept.stock === undefined
           ? null
-          : Math.max(0, Math.floor(Number(data.item.stock) || 0)),
+          : Math.max(0, Math.floor(Number(kept.stock) || 0)),
       variables,
       min_qty: Math.min(999, Math.max(1, Math.floor(Number(data.item.min_qty) || 1))),
       sale_price: parseSalePrice(data.item.sale_price, Number(data.item.price) || 0),
