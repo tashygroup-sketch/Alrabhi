@@ -284,6 +284,17 @@ export function MenuPanel({ phone }: { phone: string }) {
 
   async function handleSubmit(draft: MenuItemDraft) {
     setBusy(true);
+    // The quantities the form opened with: the server keeps today's number for any of them
+    // the admin didn't change, so an order delivered meanwhile is never put back.
+    const opened = draft.id ? items?.find((i) => i.id === draft.id) : undefined;
+    const stockSeen = opened
+      ? {
+          stock: opened.stock ?? null,
+          values: (opened.variables ?? []).flatMap((v) =>
+            v.values.map((x) => ({ name: v.name, label: x.label, stock: x.stock ?? null })),
+          ),
+        }
+      : undefined;
     try {
       await save({
         data: {
@@ -322,6 +333,7 @@ export function MenuPanel({ phone }: { phone: string }) {
                   ends_at: draft.discount_ends ? new Date(draft.discount_ends).toISOString() : null,
                 }
               : null,
+            ...(stockSeen ? { stock_seen: stockSeen } : {}),
           },
         },
       });
